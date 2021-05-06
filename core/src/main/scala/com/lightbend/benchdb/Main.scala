@@ -11,6 +11,7 @@ import java.util.regex.PatternSyntaxException
 import better.files._
 
 import scala.collection.JavaConverters._
+import scala.util.Try
 import com.typesafe.config.{ConfigFactory, ConfigParseOptions, ConfigRenderOptions, ConfigValueFactory}
 
 object Main extends Logging {
@@ -170,6 +171,72 @@ object Main extends Logging {
       }
     }
   }
+
+  def regressionTest(
+    go: GlobalOptions, testRuns: Seq[String], referenceRuns: Seq[String], benchs: Seq[String], 
+    extract: Seq[String], regex: Boolean, metric: Option[String], tolerance: Double): Try[Unit] =
+    Try {
+      new Global(go).use { g =>
+        if ((testRuns.toSet intersect referenceRuns.toSet).nonEmpty) {
+          throw new IllegalArgumentException("The test runs and reference runs must be mutually exclusive.")
+        }
+        val runs = testRuns ++ referenceRuns
+        val multi = runs.size > 1
+
+        val allRs = g.dao.run(g.dao.checkVersion andThen g.dao.queryResults(runs))
+          .map { case (rr, runId) => RunResult.fromDb(rr, runId, multi = multi)}
+        val rs = RunResult.extract(extract, regex, RunResult.filterByName(benchs, allRs)).toSeq
+        val allParamNames = rs.flatMap(_.params.keys).distinct.toVector
+        if (rs.isEmpty) {
+          throw new IllegalArgumentException("No results found for specified test or reference runs.")
+        }
+
+        def paramsStr(params: Map[String, String]): String = 
+          params map { case (k, v) => s"$k=$v"} mkString ", "
+
+        def computeReferenceValue(params: Map[String, String]): Double = {
+          val scores = 
+            rs filter { 
+              r => (referenceRuns contains r.runId.toString) && (r.params == params)
+            } map (_.primaryMetricOr(metric).score)
+          if (scores.isEmpty) {
+            throw new RuntimeException(s"No reference value found for params: ${paramsStr(params)}")
+          }
+          val (count, sumScores) = scores.toVector.foldLeft((0, 0.0)) {
+            case ((count, sumScores), score) => (count + 1, sumScores + score)
+          }
+          val meanScore = sumScores / count
+          val sdScore = math.sqrt(scores.foldLeft(0.0) { (sum, score) => 
+            (score - meanScore) * (score - meanScore) 
+          } / (count - 1))
+          meanScore
+        }
+
+        val lastId = rs.map(_.runId).max
+        if (((testRuns contains "last") && (referenceRuns contains lastId.toString)) ||
+            ((referenceRuns contains "last") && (testRuns contains lastId.toString))) {
+          throw new IllegalArgumentException("Test test runs and reference runs must be mutually exclusive.")
+        }
+        val regressionTestFailures = rs filter { r => 
+          (testRuns contains r.runId.toString) || ((testRuns contains "last") && (r.runId == lastId))
+        } flatMap { r =>
+          val score = r.primaryMetricOr(metric).score
+          val referenceValue = computeReferenceValue(r.params)
+          val positiveDeviation = (score - referenceValue) / referenceValue
+          val negativeDeviation = (referenceValue - score) / referenceValue
+          if (positiveDeviation > tolerance) {
+            Seq(f"Error: score for run ${r.runId}%s (params: ${paramsStr(r.params)}) exceeds reference value by ${positiveDeviation*100}%2.1f%% ($score%s).")
+          } else if (negativeDeviation > tolerance) {
+            Seq(f"Warning: score for run ${r.runId}%s (params: ${paramsStr(r.params)}) is less than reference value by ${negativeDeviation*100}%2.1f%% ($score%s).")
+          } else {
+            Nil
+          }
+        }
+        if (regressionTestFailures.nonEmpty) {
+          throw new RuntimeException(s"One or more regression test failures occurred:\n${regressionTestFailures mkString "\n"}")
+        }
+      }
+    }
 
   def queryResults(go: GlobalOptions, runs: Seq[String], benchs: Seq[String], extract: Seq[String], regex: Boolean, scorePrecision: Int, pivot: Seq[String], raw: Boolean, metric: Option[String]): Unit = try {
     new Global(go).use { g =>
