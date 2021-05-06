@@ -3,7 +3,7 @@ lazy val root = project.in(file("."))
   .dependsOn(core)
   .settings(inThisBuild(Seq(
     organization := "com.lightbend.benchdb",
-    version := "0.2-shai-SNAPSHOT",
+    version := "0.2-shai",
     scalaVersion := "2.12.10",
     scalacOptions ++= Seq("-deprecation", "-unchecked"),
   )))
