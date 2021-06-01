@@ -215,7 +215,7 @@ object Main extends Logging {
         val lastId = rs.map(_.runId).max
         if (((testRuns contains "last") && (referenceRuns contains lastId.toString)) ||
             ((referenceRuns contains "last") && (testRuns contains lastId.toString))) {
-          throw new IllegalArgumentException("Test test runs and reference runs must be mutually exclusive.")
+          throw new IllegalArgumentException("The test runs and reference runs must be mutually exclusive.")
         }
         val regressionTestFailures = rs filter { r => 
           (testRuns contains r.runId.toString) || ((testRuns contains "last") && (r.runId == lastId))
